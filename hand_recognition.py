@@ -1,7 +1,7 @@
 import cv2 as cv
 import numpy as np
 import easygui
-from math import sqrt, cos, sin, pi, atan2, acos, degrees
+from math import sqrt, cos, sin, pi, atan2, acos, degrees, radians
 from functools import partial
 from random import randint
 
@@ -343,5 +343,92 @@ def main():
             break
 
 
+class Rectangle:
+
+    def __init__(self, x, y, width, height, angle):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.angle = angle
+
+    def rect(self):
+        return (self.x, self.y), (self.width, self.height), self.angle
+
+
+def on_change_angle(rectangle, value):
+    rectangle.angle = value
+    rect = rectangle.rect()
+    image = np.zeros((500, 500, 3), dtype=np.uint8)
+    points = cv.boxPoints(rect)
+    points = np.int0(points)
+    cv.drawContours(image, [points], -1, (0, 0, 255), 2)
+    cv.imshow('Rectangle', image)
+    rectangles = divide_rect(rect, 3)
+    draw_divided_rectangles(rectangles, image)
+
+
+def divide_rect(rect, num_of_rectangles):
+    rectangles = []
+    (x, y), (width, height), angle = rect
+    if width > height:
+        temp = width
+        width = height
+        height = temp
+    opposite_angle = -angle
+    x_offset = width * cos(radians(opposite_angle))
+    y_offset = -width * sin(radians(opposite_angle))
+    first_margin = (x - x_offset / 2, y - y_offset / 2)
+    for index in range(0, num_of_rectangles):
+        first_margin_np = np.array(first_margin)
+        offset = np.array((x_offset, y_offset), dtype=np.float32)
+        point = first_margin_np + float(index) / float(num_of_rectangles) * offset \
+                + offset / float(num_of_rectangles) / 2.0
+        rectangle = ((int(point[0]), int(point[1])), (width / num_of_rectangles, height), angle)
+        rectangles.append(rectangle)
+    return rectangles
+
+
+def draw_divided_rectangles(rectangles, image):
+    for rectangle in rectangles:
+        red = randint(0, 255)
+        green = randint(0, 255)
+        blue = randint(0, 255)
+        points = cv.boxPoints(rectangle)
+        (x, y), (width, height), angle = rectangle
+        points = np.int0(points)
+        cv.drawContours(image, [points], -1, (blue, green, red), 2)
+        cv.circle(image, (x, y), 3, (0, 0, 255), -1)
+        bottom = get_rectangle_bottom(rectangle)
+        cv.circle(image, (int(bottom[0]), int(bottom[1])), 3, (0, 255, 0), -1)
+    cv.imshow('Rectangle', image)
+
+
+def get_rectangle_bottom(rectangle):
+    points = cv.boxPoints(rectangle)
+    points = sorted(points, key=lambda t: t[1])
+    points = [np.array(point) for point in points]
+    bottom = (points[2] + points[3]) / 2
+    return bottom[0], bottom[1]
+
+
+def second_main():
+    rectangle = Rectangle(250, 250, 100, 200, 0)
+    cv.namedWindow('Rectangle')
+    rect = rectangle.rect()
+    image = np.zeros((500, 500, 3), dtype=np.uint8)
+    points = cv.boxPoints(rect)
+    points = np.int0(points)
+    cv.drawContours(image, [points], -1, (0, 0, 255), 2)
+    cv.imshow('Rectangle', image)
+    rectangles = divide_rect(rect, 3)
+    draw_divided_rectangles(rectangles, image)
+    cv.createTrackbar('Angle', 'Rectangle', 0, 360, partial(on_change_angle, rectangle))
+    while True:
+        if cv.waitKey(0) & 0xFF == ord('q') or cv.waitKey(0) & 0xFF == ord('Q'):
+            break
+    cv.destroyAllWindows()
+
+
 if __name__ == '__main__':
-    main()
+    second_main()
