@@ -225,28 +225,32 @@ def get_horizontal_line_intersection(first_point, second_point, line):
 
 
 def get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_point):
-    quarter_length = (second_finger_point[0] - first_finger_point[0]) // 5
+    fifth_length = (second_finger_point[0] - first_finger_point[0]) // 5
+    quarter_length = ((second_finger_point[0] - first_finger_point[0]) - fifth_length) // 4
     fingers_status = [False, False, False, False, False]
     fingers_status[0] = thumb_index is not None
     finger_lines = get_fingers_lines(fingers, thumb_index, first_finger_point, second_finger_point)
     for center, bottom_center in finger_lines:
         palm_intersection = get_horizontal_line_intersection(center, bottom_center, first_finger_point[1])
-        length = int(palm_intersection[0]) - first_finger_point[0]
+        length = int(bottom_center[0]) - first_finger_point[0] - fifth_length
         finger_index = length // quarter_length
-        if finger_index < 5:
-            fingers_status[finger_index] = True
+        print(finger_index)
+        if finger_index + 1 < 5:
+            fingers_status[finger_index + 1] = True
         else:
             fingers_status[4] = True
     return fingers_status
 
 
 def draw_fingers_line(first_finger_point, second_finger_point, color_image):
-    quarter_length = (second_finger_point[0] - first_finger_point[0]) // 5
-    first_quartile = (first_finger_point[0] + quarter_length, first_finger_point[1])
-    second_quartile = (first_finger_point[0] + 2 * quarter_length, first_finger_point[1])
-    third_quartile = (first_finger_point[0] + 3 * quarter_length, first_finger_point[1])
-    fourth_quartile = (first_finger_point[0] + 4 * quarter_length, first_finger_point[1])
-    points = [first_finger_point, first_quartile, second_quartile, third_quartile, fourth_quartile, second_finger_point]
+    fifth_length = (second_finger_point[0] - first_finger_point[0]) // 5
+    quarter_length = ((second_finger_point[0] - first_finger_point[0]) - fifth_length) // 4
+    first_point = (first_finger_point[0] + fifth_length, first_finger_point[1])
+    second_point = (first_point[0] + quarter_length, first_finger_point[1])
+    third_point = (second_point[0] + quarter_length, first_finger_point[1])
+    fourth_point = (third_point[0] + quarter_length, first_finger_point[1])
+    fifth_point = (fourth_point[0] + quarter_length, first_finger_point[1])
+    points = [first_point, second_point, third_point, fourth_point, fifth_point]
     for index in range(0, len(points) - 1):
         first_point = points[index]
         second_point = points[index + 1]
@@ -264,6 +268,7 @@ def get_fingers_lines(fingers, thumb_index, first_palm_point, second_palm_point)
         if index != thumb_index:
             contour, center = finger
             (x, y), (width, height), angle = cv.minAreaRect(contour)
+            original_rect = ((x, y), (width, height), angle)
             if width > height:
                 temp = width
                 width = height
@@ -277,7 +282,7 @@ def get_fingers_lines(fingers, thumb_index, first_palm_point, second_palm_point)
                     bottom_center = get_rectangle_bottom(rectangle)
                     lines.append(((x, y), bottom_center))
             else:
-                rect = ((x, y), (width, height), angle)
+                rect = original_rect
                 bottom_center = get_rectangle_bottom(rect)
                 lines.append(((x, y), bottom_center))
     return lines
@@ -355,6 +360,11 @@ def get_hand_attributes(segmented_hand):
     cv.line(color_image, (first_wrist_point[0], first_wrist_point[1]), (second_wrist_point[0], second_wrist_point[1]),
             (0, 255, 255), 3)
     draw_fingers_line(first_finger_point, second_finger_point, color_image)
+    fingers_lines = get_fingers_lines(fingers, thumb_index, first_finger_point, second_finger_point)
+    for center, bottom in fingers_lines:
+        cv.circle(color_image, (int(center[0]), int(center[1])), 3, (0, 0, 255), -1)
+        cv.circle(color_image, (int(bottom[0]), int(bottom[1])), 3, (255, 0, 0), -1)
+        cv.line(color_image, (int(center[0]), int(center[1])), (int(bottom[0]), int(bottom[1])), (0, 255, 0), 2)
     cv.imshow(FINAL_SEGMENTED_HAND_WINDOW, color_image)
 
 
