@@ -218,6 +218,8 @@ def get_finger_line(segmented_hand, fingers, thumb_index):
 
 
 def get_horizontal_line_intersection(first_point, second_point, line):
+    if second_point[0] - first_point[0] == 0.0:
+        return second_point[0], line
     m = (second_point[1] - first_point[1]) / (second_point[0] - first_point[0])
     return int((line - first_point[1] + m * first_point[0]) / m), line
 
@@ -226,22 +228,15 @@ def get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_p
     quarter_length = (second_finger_point[0] - first_finger_point[0]) // 5
     fingers_status = [False, False, False, False, False]
     fingers_status[0] = thumb_index is not None
-    for finger_index in range(0, len(fingers)):
-        if finger_index != thumb_index:
-            finger = fingers[finger_index]
-            contour, center = finger
-            rect = cv.minAreaRect(contour)
-            box = cv.boxPoints(rect)
-            box = reversed(sorted(box, key=lambda t: t[1]))
-            box = [np.array(point) for point in box]
-            bottom_center = (box[0] + box[1]) / 2
-            palm_intersection = get_horizontal_line_intersection(center, bottom_center, first_finger_point[1])
-            length = int(palm_intersection[0]) - first_finger_point[0]
-            finger_index = length // quarter_length
-            if finger_index < 5:
-                fingers_status[finger_index] = True
-            else:
-                fingers_status[4] = True
+    finger_lines = get_fingers_lines(fingers, thumb_index, first_finger_point, second_finger_point)
+    for center, bottom_center in finger_lines:
+        palm_intersection = get_horizontal_line_intersection(center, bottom_center, first_finger_point[1])
+        length = int(palm_intersection[0]) - first_finger_point[0]
+        finger_index = length // quarter_length
+        if finger_index < 5:
+            fingers_status[finger_index] = True
+        else:
+            fingers_status[4] = True
     return fingers_status
 
 
@@ -262,15 +257,64 @@ def draw_fingers_line(first_finger_point, second_finger_point, color_image):
         cv.line(color_image, first_point, second_point, color, 2)
 
 
+def get_fingers_lines(fingers, thumb_index, first_palm_point, second_palm_point):
+    lines = []
+    palm_length = (second_palm_point[0] - first_palm_point[0]) / 5.0
+    for index, finger in enumerate(fingers):
+        if index != thumb_index:
+            contour, center = finger
+            (x, y), (width, height), angle = cv.minAreaRect(contour)
+            if width > height:
+                temp = width
+                width = height
+                height = temp
+            if int(float(width) / float(palm_length)) > 1:
+                rect = ((x, y), (width, height), angle)
+                num_of_rectangles = int(float(width) / float(palm_length))
+                rectangles = divide_rect(rect, num_of_rectangles)
+                for rectangle in rectangles:
+                    (x, y), (width, height), angle = rectangle
+                    bottom_center = get_rectangle_bottom(rectangle)
+                    lines.append(((x, y), bottom_center))
+            else:
+                rect = ((x, y), (width, height), angle)
+                bottom_center = get_rectangle_bottom(rect)
+                lines.append(((x, y), bottom_center))
+    return lines
+
+
 def get_hand_attributes(segmented_hand):
     palm_point = get_palm_point(segmented_hand)
     contours, _ = cv.findContours(segmented_hand, cv.RETR_LIST, cv.CHAIN_APPROX_NONE)
-    contour = contours[0]
+    poly_image = np.zeros((segmented_hand.shape[0], segmented_hand.shape[1], 3), dtype=np.uint8)
+    cv.drawContours(poly_image, contours, -1, (255, 0, 0), 1)
+    cv.imshow('Image for finger line', poly_image)
+    while True:
+        if cv.waitKey(0) & 0xFF == ord('q') or cv.waitKey(0) & 0xFF == ord('Q'):
+            break
+    contour = max(contours, key=lambda cnt: cv.arcLength(cnt, True))
+    '''contour = contours[0]'''
     contour = [point[0] for point in contour]
+    poly_image = np.zeros((segmented_hand.shape[0], segmented_hand.shape[1], 3), dtype=np.uint8)
+    cv.drawContours(poly_image, np.array([contour]), -1, (255, 0, 0), 1)
+    cv.imshow('Image for finger line', poly_image)
+    while True:
+        if cv.waitKey(0) & 0xFF == ord('q') or cv.waitKey(0) & 0xFF == ord('Q'):
+            break
     maximum_radius = get_maximum_radius(palm_point, contour)
     radius = 1.2 * maximum_radius
     sampled_points = get_sampled_points(palm_point, radius)
     palm_mask_points = get_palm_mask_points(sampled_points, contour)
+    poly_image = np.zeros((segmented_hand.shape[0], segmented_hand.shape[1], 3), dtype=np.uint8)
+    for point in palm_mask_points:
+        cv.circle(poly_image, (point[0], point[1]), 3, (0, 0, 255), 1)
+    for point in sampled_points:
+        cv.circle(poly_image, (point[0], point[1]), 3, (255, 0, 0), 1)
+    cv.drawContours(poly_image, np.array([contour]), -1, (0, 255, 0), 1)
+    cv.imshow('Image for finger line', poly_image)
+    while True:
+        if cv.waitKey(0) & 0xFF == ord('q') or cv.waitKey(0) & 0xFF == ord('Q'):
+            break
     first_wrist_point, second_wrist_point = get_wrist_points(palm_mask_points)
     middle_wrist_point = ((first_wrist_point[0] + second_wrist_point[0]) / 2.0,
                           (first_wrist_point[1] + second_wrist_point[1]) / 2.0)
@@ -431,4 +475,4 @@ def second_main():
 
 
 if __name__ == '__main__':
-    second_main()
+    main()
