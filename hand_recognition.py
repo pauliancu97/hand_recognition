@@ -163,7 +163,8 @@ def get_thumb_index(fingers, palm_point, first_wrist_point, second_wrist_point):
         finger_vector = np.array(finger_vector, dtype=np.float32)
         cos_angle = wrist_vector.dot(finger_vector) / (np.linalg.norm(wrist_vector) * np.linalg.norm(finger_vector))
         angle = degrees(acos(cos_angle))
-        if (angle < 90 and angle < 50) or (angle > 90 and (180.0 - angle) < 50):
+        print(angle)
+        if angle < 50:
             return index
     return None
 
@@ -237,13 +238,19 @@ def get_horizontal_line_intersection(first_point, second_point, line):
 
 def get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_point):
     fifth_length = (second_finger_point[0] - first_finger_point[0]) // 5
-    quarter_length = ((second_finger_point[0] - first_finger_point[0]) - fifth_length) // 4
+    if thumb_index is not None:
+        quarter_length = ((second_finger_point[0] - first_finger_point[0]) - fifth_length) // 4
+    else:
+        quarter_length = ((second_finger_point[0] - first_finger_point[0])) // 4
     fingers_status = [False, False, False, False, False]
     fingers_status[0] = thumb_index is not None
     finger_lines = get_fingers_lines(fingers, thumb_index, first_finger_point, second_finger_point)
     for center, bottom_center in finger_lines:
         palm_intersection = get_horizontal_line_intersection(center, bottom_center, first_finger_point[1])
-        length = int(bottom_center[0]) - first_finger_point[0] - fifth_length
+        if thumb_index is not None:
+            length = int(bottom_center[0]) - first_finger_point[0] - fifth_length
+        else:
+            length = int(bottom_center[0]) - first_finger_point[0]
         finger_index = length // quarter_length
         finger_index = finger_index if finger_index >= 0 else 0
         if finger_index + 1 < 5:
@@ -253,10 +260,16 @@ def get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_p
     return fingers_status
 
 
-def draw_fingers_line(first_finger_point, second_finger_point, color_image):
+def draw_fingers_line(first_finger_point, second_finger_point, thumb_index, color_image):
     fifth_length = (second_finger_point[0] - first_finger_point[0]) // 5
-    quarter_length = ((second_finger_point[0] - first_finger_point[0]) - fifth_length) // 4
-    first_point = (first_finger_point[0] + fifth_length, first_finger_point[1])
+    if thumb_index is not None:
+        quarter_length = ((second_finger_point[0] - first_finger_point[0]) - fifth_length) // 4
+    else:
+        quarter_length = ((second_finger_point[0] - first_finger_point[0])) // 4
+    if thumb_index is not None:
+        first_point = (first_finger_point[0] + fifth_length, first_finger_point[1])
+    else:
+        first_point = (first_finger_point[0], first_finger_point[1])
     second_point = (first_point[0] + quarter_length, first_finger_point[1])
     third_point = (second_point[0] + quarter_length, first_finger_point[1])
     fourth_point = (third_point[0] + quarter_length, first_finger_point[1])
@@ -394,9 +407,11 @@ def get_hand_attributes(segmented_hand):
     cv.circle(color_image, palm_point, int(radius), (255, 0, 0), 1)
     cv.circle(color_image, (first_wrist_point[0], first_wrist_point[1]), 3, (0, 0, 255), 3)
     cv.circle(color_image, (second_wrist_point[0], second_wrist_point[1]), 3, (0, 0, 255), 3)
+    cv.circle(color_image, first_finger_point, 3, (0, 255, 0), 2)
+    cv.circle(color_image, second_finger_point, 3, (0, 255, 0), 2)
     cv.line(color_image, (first_wrist_point[0], first_wrist_point[1]), (second_wrist_point[0], second_wrist_point[1]),
             (0, 255, 255), 3)
-    draw_fingers_line(first_finger_point, second_finger_point, color_image)
+    draw_fingers_line(first_finger_point, second_finger_point, thumb_index, color_image)
     fingers_lines = get_fingers_lines(fingers, thumb_index, first_finger_point, second_finger_point)
     for center, bottom in fingers_lines:
         cv.circle(color_image, (int(center[0]), int(center[1])), 3, (0, 0, 255), -1)
@@ -492,18 +507,19 @@ def main():
     img = cv.imread(image_name)
     hsv_values = HSVValues()
     cv.namedWindow(ORIGINAL_IMAGE_WINDOW)
+    cv.namedWindow('Control Panel')
     cv.imshow(ORIGINAL_IMAGE_WINDOW, img)
-    lower_hue_bar = TrackBar(hsv_values, 'lower_hue', 0, 180, 'Lower Hue', ORIGINAL_IMAGE_WINDOW,
+    lower_hue_bar = TrackBar(hsv_values, 'lower_hue', 0, 180, 'Lower Hue', 'Control Panel',
                              partial(on_change, img, hsv_values))
-    upper_hue_bar = TrackBar(hsv_values, 'upper_hue', 0, 180, 'Upper Hue', ORIGINAL_IMAGE_WINDOW,
+    upper_hue_bar = TrackBar(hsv_values, 'upper_hue', 0, 180, 'Upper Hue', 'Control Panel',
                              partial(on_change, img, hsv_values))
-    lower_saturation_bar = TrackBar(hsv_values, 'lower_saturation', 0, 255, 'Lower Saturation', ORIGINAL_IMAGE_WINDOW,
+    lower_saturation_bar = TrackBar(hsv_values, 'lower_saturation', 0, 255, 'Lower Saturation', 'Control Panel',
                                     partial(on_change, img, hsv_values))
-    upper_saturation_bar = TrackBar(hsv_values, 'upper_saturation', 0, 255, 'Upper Saturation', ORIGINAL_IMAGE_WINDOW,
+    upper_saturation_bar = TrackBar(hsv_values, 'upper_saturation', 0, 255, 'Upper Saturation', 'Control Panel',
                                     partial(on_change, img, hsv_values))
-    lower_value_bar = TrackBar(hsv_values, 'lower_value', 0, 255, 'Lower Value', ORIGINAL_IMAGE_WINDOW,
+    lower_value_bar = TrackBar(hsv_values, 'lower_value', 0, 255, 'Lower Value', 'Control Panel',
                                partial(on_change, img, hsv_values))
-    upper_value_bar = TrackBar(hsv_values, 'upper_value', 0, 255, 'Upper Value', ORIGINAL_IMAGE_WINDOW,
+    upper_value_bar = TrackBar(hsv_values, 'upper_value', 0, 255, 'Upper Value', 'Control Panel',
                                partial(on_change, img, hsv_values))
     while True:
         if cv.waitKey(1) & 0xFF == ord('s'):
@@ -614,5 +630,5 @@ def second_main():
 
 
 if __name__ == '__main__':
-    #main()
-    third_main()
+    main()
+    #third_main()
