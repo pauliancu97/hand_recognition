@@ -4,6 +4,8 @@ import easygui
 from math import sqrt, cos, sin, pi, atan2, acos, degrees, radians
 from functools import partial
 from random import randint
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import find_peaks
 
 
 ORIGINAL_IMAGE_WINDOW = 'Original Image'
@@ -24,7 +26,7 @@ class HSVValues:
 
 class TrackBar:
 
-    def __init__(self, obj, attribute_name, lower_value, upper_value, track_bar_name, window_name, event_handler):
+    def __init__(self, obj, attribute_name, lower_value, upper_value, track_bar_name, window_name, event_handler=None):
         self.obj = obj
         self.attribute_name = attribute_name
         self.lower_value = lower_value
@@ -36,7 +38,8 @@ class TrackBar:
 
     def on_change(self, value):
         setattr(self.obj, self.attribute_name, value)
-        self.event_handler()
+        if self.event_handler is not None:
+            self.event_handler()
 
 
 def on_change(img, hsv_values):
@@ -50,6 +53,8 @@ def segment_hand(img, hsv_values):
     img_hsv = cv.cvtColor(img, cv.COLOR_BGR2HSV)
     img_bin = cv.inRange(img_hsv, (hsv_values.lower_hue, hsv_values.lower_saturation, hsv_values.lower_value),
                          (hsv_values.upper_hue, hsv_values.upper_saturation, hsv_values.upper_value))
+    kernel = np.ones(shape=(5, 5), dtype=np.uint8)
+    img_bin = cv.morphologyEx(img_bin, cv.MORPH_CLOSE, kernel)
     num_labels, labels, stats, _ = cv.connectedComponentsWithStats(img_bin)
     hand_label = max([(label, stats[label - 1, cv.CC_STAT_AREA]) for label in range(1, num_labels + 1)],
                      key=lambda x: x[1])[0]
@@ -63,6 +68,12 @@ def segment_hand(img, hsv_values):
 
 def get_palm_point(segmented_hand):
     distance_transform = cv.distanceTransform(segmented_hand, cv.DIST_L2, 3)
+    distance_transform_normalized = np.zeros(distance_transform.shape, dtype=np.uint8)
+    cv.normalize(distance_transform, distance_transform_normalized, 0, 255, cv.NORM_MINMAX, dtype=cv.CV_8UC1)
+    cv.imshow('Distance Transform', distance_transform_normalized)
+    while True:
+        if cv.waitKey(0) & 0xFF == ord('q') or cv.waitKey(0) & 0xFF == ord('Q'):
+            break
     point = np.unravel_index(np.argmax(distance_transform, axis=None), distance_transform.shape)
     return point[1], point[0]
 
@@ -234,7 +245,7 @@ def get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_p
         palm_intersection = get_horizontal_line_intersection(center, bottom_center, first_finger_point[1])
         length = int(bottom_center[0]) - first_finger_point[0] - fifth_length
         finger_index = length // quarter_length
-        print(finger_index)
+        finger_index = finger_index if finger_index >= 0 else 0
         if finger_index + 1 < 5:
             fingers_status[finger_index + 1] = True
         else:
@@ -264,6 +275,7 @@ def draw_fingers_line(first_finger_point, second_finger_point, color_image):
 def get_fingers_lines(fingers, thumb_index, first_palm_point, second_palm_point):
     lines = []
     palm_length = (second_palm_point[0] - first_palm_point[0]) / 5.0
+    palm_length = ((second_palm_point[0] - first_palm_point[0]) - palm_length) / 4.0
     for index, finger in enumerate(fingers):
         if index != thumb_index:
             contour, center = finger
@@ -273,14 +285,13 @@ def get_fingers_lines(fingers, thumb_index, first_palm_point, second_palm_point)
                 temp = width
                 width = height
                 height = temp
-            if int(float(width) / float(palm_length)) > 1:
-                rect = ((x, y), (width, height), angle)
-                num_of_rectangles = int(float(width) / float(palm_length))
+            print(round(float(width) / float(palm_length)))
+            if round(float(width) / float(palm_length)) > 1:
+                rect = original_rect
+                num_of_rectangles = round(float(width) / float(palm_length))
                 rectangles = divide_rect(rect, num_of_rectangles)
-                for rectangle in rectangles:
-                    (x, y), (width, height), angle = rectangle
-                    bottom_center = get_rectangle_bottom(rectangle)
-                    lines.append(((x, y), bottom_center))
+                for center, bottom in rectangles:
+                    lines.append((center, bottom))
             else:
                 rect = original_rect
                 bottom_center = get_rectangle_bottom(rect)
@@ -288,8 +299,30 @@ def get_fingers_lines(fingers, thumb_index, first_palm_point, second_palm_point)
     return lines
 
 
+def get_fingers_distance_transform(segmented_hand, fingers, thumb_index):
+    image = np.zeros(segmented_hand.shape, dtype=np.uint8)
+    for index, finger in enumerate(fingers):
+        if index != thumb_index:
+            contour, _ = finger
+            cv.fillPoly(image, [contour], 255)
+    distance_transform = cv.distanceTransform(image, cv.DIST_L2, 3)
+    return distance_transform
+
+
+def get_finger_tips(segmented_hand, fingers, thumb_index, palm_center):
+    distance_transform = get_fingers_distance_transform(segmented_hand, fingers, thumb_index)
+    histogram = np.zeros((360,), dtype=np.float32)
+    for row in range(0, distance_transform.shape[0]):
+        for col in range(0, distance_transform.shape[1]):
+            angle = degrees(atan2(row - palm_center[1], col - palm_center[0]))
+            if angle < 0:
+                angle += 360
+            histogram[int(angle)] = histogram[int(angle)] + distance_transform[row, col]
+    histogram = gaussian_filter1d(histogram, 3)
+    peaks, _ = find_peaks(histogram)
+
+
 def get_hand_attributes(segmented_hand):
-    palm_point = get_palm_point(segmented_hand)
     contours, _ = cv.findContours(segmented_hand, cv.RETR_LIST, cv.CHAIN_APPROX_NONE)
     poly_image = np.zeros((segmented_hand.shape[0], segmented_hand.shape[1], 3), dtype=np.uint8)
     cv.drawContours(poly_image, contours, -1, (255, 0, 0), 1)
@@ -306,6 +339,9 @@ def get_hand_attributes(segmented_hand):
     while True:
         if cv.waitKey(0) & 0xFF == ord('q') or cv.waitKey(0) & 0xFF == ord('Q'):
             break
+    hand_contour_image = np.zeros(segmented_hand.shape, dtype=np.uint8)
+    cv.fillPoly(hand_contour_image, np.array([contour]), 255)
+    palm_point = get_palm_point(hand_contour_image)
     maximum_radius = get_maximum_radius(palm_point, contour)
     radius = 1.2 * maximum_radius
     sampled_points = get_sampled_points(palm_point, radius)
@@ -348,6 +384,7 @@ def get_hand_attributes(segmented_hand):
     segmented_hand = cv.morphologyEx(segmented_hand, cv.MORPH_OPEN, kernel)
     fingers = get_fingers(segmented_hand)
     thumb_index = get_thumb_index(fingers, palm_point, first_wrist_point, second_wrist_point)
+    get_finger_tips(segmented_hand, fingers, thumb_index, palm_point)
     first_finger_point, second_finger_point = get_finger_line(segmented_hand_no_arm, fingers, thumb_index)
     fingers_status = get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_point)
     print(fingers_status)
@@ -366,6 +403,88 @@ def get_hand_attributes(segmented_hand):
         cv.circle(color_image, (int(bottom[0]), int(bottom[1])), 3, (255, 0, 0), -1)
         cv.line(color_image, (int(center[0]), int(center[1])), (int(bottom[0]), int(bottom[1])), (0, 255, 0), 2)
     cv.imshow(FINAL_SEGMENTED_HAND_WINDOW, color_image)
+
+
+class Mouse:
+
+    def __init__(self):
+        self.selected = False
+        self.finished = False
+        self.first_corner = None
+        self.second_corner = None
+        self.first_point = None
+        self.second_point = None
+
+    def callback(self, event, x, y, flags, param):
+        if event == cv.EVENT_LBUTTONDOWN:
+            if not self.selected:
+                self.selected = True
+                self.first_corner = (x, y)
+        elif event == cv.EVENT_LBUTTONUP:
+            if self.selected and (not self.finished):
+                self.finished = True
+                self.selected = False
+        elif event == cv.EVENT_MOUSEMOVE:
+            if self.selected:
+                self.second_corner = (x, y)
+                self.first_point = [0, 0]
+                self.second_point = [0, 0]
+                self.first_point[0] = self.first_corner[0] if self.first_corner[0] < self.second_corner[0] else \
+                    self.second_corner[0]
+                self.first_point[1] = self.first_corner[1] if self.first_corner[1] < self.second_corner[1] else \
+                    self.second_corner[1]
+                self.second_point[0] = self.first_corner[0] if self.first_corner[0] > self.second_corner[0] else \
+                    self.second_corner[0]
+                self.second_point[1] = self.first_corner[1] if self.first_corner[1] > self.second_corner[1] else \
+                    self.second_corner[1]
+                self.first_point = (int(self.first_point[0]), int(self.first_point[1]))
+                self.second_point = (int(self.second_point[0]), int(self.second_point[1]))
+
+    def draw(self, image):
+        if self.selected:
+            cv.rectangle(image, self.first_point, self.second_point, (255, 0, 0))
+
+
+def third_main():
+    camera = cv.VideoCapture(0)
+    #camera.set(cv.CAP_PROP_FRAME_WIDTH, 1280)
+    #camera.set(cv.CAP_PROP_FRAME_HEIGHT, 720)
+    mouse = Mouse()
+    cv.namedWindow('Camera')
+    cv.setMouseCallback('Camera', mouse.callback)
+    selected_roi = False
+    first_point = None
+    second_point = None
+    hsv_values = None
+    while camera.isOpened():
+        ret, frame = camera.read()
+        if ret:
+            if not selected_roi:
+                mouse.draw(frame)
+                if mouse.finished:
+                    selected_roi = True
+                    first_point = mouse.first_point
+                    second_point = mouse.second_point
+            else:
+                cv.namedWindow('Panel')
+                cv.rectangle(frame, first_point, second_point, (255, 0, 0))
+                roi = frame[first_point[1]: second_point[1], first_point[0]: second_point[0]]
+                #cv.imshow('ROI', roi)
+                if hsv_values is None:
+                    hsv_values = HSVValues()
+                    lower_hue_bar = TrackBar(hsv_values, 'lower_hue', 0, 180, 'Lower Hue', 'Panel')
+                    upper_hue_bar = TrackBar(hsv_values, 'upper_hue', 0, 180, 'Upper Hue', 'Panel')
+                    lower_saturation_bar = TrackBar(hsv_values, 'lower_saturation', 0, 255, 'Lower Saturation', 'Panel')
+                    upper_saturation_bar = TrackBar(hsv_values, 'upper_saturation', 0, 255, 'Upper Saturation', 'Panel')
+                    lower_value_bar = TrackBar(hsv_values, 'lower_value', 0, 255, 'Lower Value', 'Panel')
+                    upper_value_bar = TrackBar(hsv_values, 'upper_value', 0, 255, 'Upper Value', 'Panel')
+                else:
+                    segmented_hand = segment_hand(roi, hsv_values)
+                    cv.imshow('Segmented', segmented_hand)
+            cv.imshow('Camera', frame)
+            if cv.waitKey(25) & 0xFF == ord('q') or cv.waitKey(25) & 0xFF == ord('Q'):
+                break
+    camera.release()
 
 
 def main():
@@ -422,39 +541,49 @@ def on_change_angle(rectangle, value):
     draw_divided_rectangles(rectangles, image)
 
 
+def get_rectangle_attributes(rect):
+    (x, y), _, _ = rect
+    points = cv.boxPoints(rect)
+    dist_first_second = distance(points[0], points[1])
+    dist_second_third = distance(points[1], points[2])
+    first_point = points[0]
+    second_point = points[1]
+    width = dist_second_third
+    height = dist_first_second
+    if dist_second_third > dist_first_second:
+        first_point = points[1]
+        second_point = points[2]
+        width = dist_first_second
+        height = dist_second_third
+    angle = degrees(atan2(second_point[1] - first_point[1], second_point[0] - first_point[0]))
+    return (x, y), (width, height), angle
+
+
 def divide_rect(rect, num_of_rectangles):
     rectangles = []
-    (x, y), (width, height), angle = rect
-    if width > height:
-        temp = width
-        width = height
-        height = temp
-    opposite_angle = -angle
+    (x, y), (width, height), angle = get_rectangle_attributes(rect)
+    opposite_angle = 90.0 - angle
     x_offset = width * cos(radians(opposite_angle))
     y_offset = -width * sin(radians(opposite_angle))
+    bottom_x_offset = width * cos(radians(-angle))
+    bottom_y_offset = -width * sin(radians(-angle))
+    bottom_offset = np.array((bottom_x_offset, bottom_y_offset), dtype=np.float32)
     first_margin = (x - x_offset / 2, y - y_offset / 2)
     for index in range(0, num_of_rectangles):
         first_margin_np = np.array(first_margin)
         offset = np.array((x_offset, y_offset), dtype=np.float32)
         point = first_margin_np + float(index) / float(num_of_rectangles) * offset \
                 + offset / float(num_of_rectangles) / 2.0
-        rectangle = ((int(point[0]), int(point[1])), (width / num_of_rectangles, height), angle)
-        rectangles.append(rectangle)
+        bottom = point - bottom_offset
+        rectangles.append(((int(point[0]), int(point[1])), (int(bottom[0]), int(bottom[1]))))
     return rectangles
 
 
 def draw_divided_rectangles(rectangles, image):
     for rectangle in rectangles:
-        red = randint(0, 255)
-        green = randint(0, 255)
-        blue = randint(0, 255)
-        points = cv.boxPoints(rectangle)
-        (x, y), (width, height), angle = rectangle
-        points = np.int0(points)
-        cv.drawContours(image, [points], -1, (blue, green, red), 2)
-        cv.circle(image, (x, y), 3, (0, 0, 255), -1)
-        bottom = get_rectangle_bottom(rectangle)
-        cv.circle(image, (int(bottom[0]), int(bottom[1])), 3, (0, 255, 0), -1)
+        center, bottom = rectangle
+        cv.circle(image, center, 3, (0, 0, 255), 2)
+        cv.circle(image, bottom, 3, (255, 0, 0), 2)
     cv.imshow('Rectangle', image)
 
 
@@ -485,4 +614,5 @@ def second_main():
 
 
 if __name__ == '__main__':
-    main()
+    #main()
+    third_main()
