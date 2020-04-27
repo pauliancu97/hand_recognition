@@ -6,6 +6,9 @@ from functools import partial
 from random import randint
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks
+from time import time
+import moderngl
+import moderngl_window as mglw
 
 
 ORIGINAL_IMAGE_WINDOW = 'Original Image'
@@ -42,18 +45,214 @@ class TrackBar:
             self.event_handler()
 
 
+class DistanceTransformVisualization:
+
+    def __init__(self, img):
+        self.img = img
+
+    def get_image(self):
+        distance_transform = cv.distanceTransform(self.img, cv.DIST_L2, 3)
+        distance_transform_normalized = np.zeros(distance_transform.shape, dtype=np.uint8)
+        cv.normalize(distance_transform, distance_transform_normalized, 0, 255, cv.NORM_MINMAX, dtype=cv.CV_8UC1)
+        return distance_transform_normalized
+
+
+class PalmPointVisualization:
+
+    def __init__(self, img, point):
+        self.img = img
+        self.point = point
+
+    def get_image(self):
+        distance_transform = cv.distanceTransform(self.img, cv.DIST_L2, 3)
+        distance_transform_normalized = np.zeros(distance_transform.shape, dtype=np.uint8)
+        cv.normalize(distance_transform, distance_transform_normalized, 0, 255, cv.NORM_MINMAX, dtype=cv.CV_8UC1)
+        result = cv.cvtColor(distance_transform_normalized, cv.COLOR_GRAY2BGR)
+        cv.circle(result, self.point, 10, (0, 255, 0), -1)
+        return result
+
+
+class PalmRadiusVisualisation:
+
+    def __init__(self, img, point, radius):
+        self.img = img
+        self.point = point
+        self.radius = radius
+
+    def get_image(self):
+        result = cv.cvtColor(self.img, cv.COLOR_GRAY2BGR)
+        cv.circle(result, self.point, 10, (0, 255, 0), -1)
+        cv.circle(result, self.point, int(self.radius), (0, 0, 255), 2)
+        return result
+
+
+class PalmMaskPointsVisualisation:
+
+    def __init__(self, img, center, radius, sampled_points, palm_mask_points):
+        self.img = img
+        self.center = center
+        self.radius = radius
+        self.sampled_points = sampled_points
+        self.palm_mask_points = palm_mask_points
+
+    def get_image(self):
+        result = cv.cvtColor(self.img, cv.COLOR_GRAY2BGR)
+        cv.circle(result, self.center, 10, (0, 255, 0), -1)
+        cv.circle(result, self.center, int(self.radius), (0, 0, 255), 2)
+        for sample_point, mask_point in zip(self.sampled_points, self.palm_mask_points):
+            cv.line(result, sample_point, mask_point, (255, 0, 0), 1)
+        return result
+
+
+class PalmWristPointsVisualisation:
+
+    def __init__(self, img, center, radius, sampled_points, palm_mask_points, first_wrist_point, second_wrist_point):
+        self.img = img
+        self.center = center
+        self.radius = radius
+        self.sampled_points = sampled_points
+        self.palm_mask_points = palm_mask_points
+        self.first_wrist_point = first_wrist_point
+        self.second_wrist_point = second_wrist_point
+
+    def get_image(self):
+        vis = PalmMaskPointsVisualisation(self.img, self.center, self.radius, self.sampled_points,
+                                          self.palm_mask_points)
+        result = vis.get_image()
+        cv.circle(result, self.first_wrist_point, 10, (255, 255, 0), -1)
+        cv.circle(result, self.second_wrist_point, 10, (255, 255, 0), -1)
+        cv.line(result, self.first_wrist_point, self.second_wrist_point, (0, 255, 255), 3)
+        return result
+
+
+class FingersBoundingBoxesVisualisation:
+
+    def __init__(self, fingers_image):
+        self.fingers_image = fingers_image
+
+    def get_image(self):
+        result = cv.cvtColor(self.fingers_image, cv.COLOR_GRAY2BGR)
+        contours, _ = cv.findContours(self.fingers_image, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE)
+        rectangles = [cv.minAreaRect(contour) for contour in contours]
+        for rectangle in rectangles:
+            points = cv.boxPoints(rectangle)
+            for first_index in range(0, 4):
+                second_index = first_index + 1
+                second_index = 0 if second_index == 4 else second_index
+                first_point = points[first_index]
+                first_point = (int(first_point[0]), int(first_point[1]))
+                second_point = points[second_index]
+                second_point = (int(second_point[0]), int(second_point[1]))
+                cv.line(result, first_point, second_point, (0, 0, 255), 2)
+        return result
+
+
+class FingerLinesVisualisation:
+
+    def __init__(self, fingers_image, finger_lines):
+        self.fingers_image = fingers_image
+        self.finger_lines = finger_lines
+
+    def get_image(self):
+        result = cv.cvtColor(self.fingers_image, cv.COLOR_GRAY2BGR)
+        for center, bottom in self.finger_lines:
+            center = (int(center[0]), int(center[1]))
+            bottom = (int(bottom[0]), int(bottom[1]))
+            cv.circle(result, center, 5, (0, 255, 0), 2)
+            cv.circle(result, bottom, 5, (0, 255, 0), 2)
+            cv.line(result, center, bottom, (0, 0, 255), 2)
+        return result
+
+
+class FinalVisualization:
+
+    def __init__(self, palm_point, palm_line, wrist_line, finger_lines, finger_contours, finger_status, thumb_index):
+        self.palm_point = palm_point
+        self.palm_line = palm_line
+        self.wrist_line = wrist_line
+        self.finger_lines = finger_lines
+        self.finger_contours = finger_contours
+        self.finger_status = finger_status
+        self.thumb_index = thumb_index
+
+    def get_image(self, size):
+        fingers_descriptors = ('Thumb Finger', 'Index Finger', 'Middle Finger', 'Ring Finger', 'Little Finger')
+        fingers_texts = []
+        for index, status in enumerate(self.finger_status):
+            status_str = 'Up' if status else 'Down'
+            finger_text = '{}: {}'.format(fingers_descriptors[index], status_str)
+            fingers_texts.append(finger_text)
+        fingers_display_info = []
+        for finger_text in fingers_texts:
+            (width, height), baseline = cv.getTextSize(finger_text, cv.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            height += baseline
+            fingers_display_info.append((finger_text, width, height))
+        max_width = max(fingers_display_info, key=lambda x: x[1])[1]
+        whole_image = np.zeros((size[0], size[1] + max_width, 3), dtype=np.uint8)
+        current_height_offset = 0
+        for finger_display_info in fingers_display_info:
+            cv.putText(whole_image, finger_display_info[0], (0, current_height_offset + finger_display_info[2]),
+                       cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            current_height_offset += finger_display_info[2]
+        image = np.zeros((size[0], size[1], 3), dtype=np.uint8)
+        cv.circle(image, self.palm_point, 5, (0, 255, 0), 2)
+        cv.circle(image, (self.wrist_line[0][0], self.wrist_line[0][1]), 3, (255, 0, 0), -1)
+        cv.circle(image, (self.wrist_line[1][0], self.wrist_line[1][1]), 3, (255, 0, 0), -1)
+        cv.line(image, (self.wrist_line[0][0], self.wrist_line[0][1]), (self.wrist_line[1][0], self.wrist_line[1][1]),
+                (0, 255, 255), 2)
+        for contour, _ in self.finger_contours:
+            cv.drawContours(image, contour, -1, (0, 0, 255))
+        if self.thumb_index is not None:
+            thumb_contour, thumb_center = self.finger_contours[self.thumb_index]
+            thumb_rect = cv.minAreaRect(thumb_contour)
+            thumb_bottom = get_rectangle_bottom(thumb_rect)
+            self.finger_lines.append((thumb_center, thumb_bottom))
+        self.finger_lines = [((int(xc), int(yc)), (int(xb), int(yb))) for (xc, yc), (xb, yb) in self.finger_lines]
+        for center, bottom in self.finger_lines:
+            cv.circle(image, center, 3, (0, 255, 0), -1)
+            cv.circle(image, bottom, 3, (0, 255, 0), -1)
+            cv.line(image, center, bottom, (0, 255, 0))
+            cv.line(image, bottom, self.palm_point, (0, 255, 0))
+        if self.thumb_index is not None:
+            fifth_length = (self.palm_line[1][0] - self.palm_line[0][0]) // 5
+            first_palm_point = (self.palm_line[0][0] + fifth_length, self.palm_line[0][1])
+            self.palm_line = (first_palm_point, self.palm_line[1])
+        cv.line(image, self.palm_line[0], self.palm_line[1], (0, 255, 255))
+        quarter_length = (self.palm_line[1][0] - self.palm_line[0][0]) // 4
+        for index in range(1, 4):
+            first_palm_point = self.palm_line[0]
+            first_limit_point = (first_palm_point[0] + index * quarter_length, first_palm_point[1] + 5)
+            second_limit_point = (first_palm_point[0] + index * quarter_length, first_palm_point[1] - 5)
+            cv.line(image, first_limit_point, second_limit_point, (0, 0, 255))
+        whole_image[:, max_width:] = image
+        return whole_image
+
+
 def on_change(img, hsv_values):
-    img_hsv = cv.cvtColor(img, cv.COLOR_BGR2HSV)
+    img_equalized = equalize_histogram(img)
+    img_hsv = cv.cvtColor(img_equalized, cv.COLOR_BGR2HSV)
     img_bin = cv.inRange(img_hsv, (hsv_values.lower_hue, hsv_values.lower_saturation, hsv_values.lower_value),
                          (hsv_values.upper_hue, hsv_values.upper_saturation, hsv_values.upper_value))
     cv.imshow(SEGMENTED_HAND_WINDOW, img_bin)
+
+
+def equalize_histogram(img):
+    hsv_img = cv.cvtColor(img, cv.COLOR_BGR2HSV)
+    value_channel = hsv_img[:, :, -1]
+    clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    value_channel = clahe.apply(value_channel)
+    for row in range(0, img.shape[0]):
+        for col in range(0, img.shape[1]):
+            hsv_img[row, col, 2] = value_channel[row, col]
+    result = cv.cvtColor(hsv_img, cv.COLOR_HSV2BGR)
+    return result
 
 
 def segment_hand(img, hsv_values):
     img_hsv = cv.cvtColor(img, cv.COLOR_BGR2HSV)
     img_bin = cv.inRange(img_hsv, (hsv_values.lower_hue, hsv_values.lower_saturation, hsv_values.lower_value),
                          (hsv_values.upper_hue, hsv_values.upper_saturation, hsv_values.upper_value))
-    kernel = np.ones(shape=(5, 5), dtype=np.uint8)
+    kernel = np.ones(shape=(7, 7), dtype=np.uint8)
     img_bin = cv.morphologyEx(img_bin, cv.MORPH_CLOSE, kernel)
     num_labels, labels, stats, _ = cv.connectedComponentsWithStats(img_bin)
     hand_label = max([(label, stats[label - 1, cv.CC_STAT_AREA]) for label in range(1, num_labels + 1)],
@@ -70,10 +269,6 @@ def get_palm_point(segmented_hand):
     distance_transform = cv.distanceTransform(segmented_hand, cv.DIST_L2, 3)
     distance_transform_normalized = np.zeros(distance_transform.shape, dtype=np.uint8)
     cv.normalize(distance_transform, distance_transform_normalized, 0, 255, cv.NORM_MINMAX, dtype=cv.CV_8UC1)
-    cv.imshow('Distance Transform', distance_transform_normalized)
-    while True:
-        if cv.waitKey(0) & 0xFF == ord('q') or cv.waitKey(0) & 0xFF == ord('Q'):
-            break
     point = np.unravel_index(np.argmax(distance_transform, axis=None), distance_transform.shape)
     return point[1], point[0]
 
@@ -110,11 +305,42 @@ def get_sampled_points(palm_point, radius):
 
 def get_palm_mask_points(sampled_points, contour):
     palm_mask_points = []
+    np_contour = np.asarray(contour)
     for sampled_point in sampled_points:
-        distances = [(distance(sampled_point, point), point) for point in contour]
-        closest_point = min(distances, key=lambda t: t[0])[1]
-        palm_mask_points.append((closest_point[0], closest_point[1]))
+        deltas = np_contour - np.array(sampled_point)
+        dist_2 = np.einsum('ij,ij->i', deltas, deltas)
+        min_index = np.argmin(dist_2)
+        palm_mask_points.append((contour[min_index][0], contour[min_index][1]))
     return palm_mask_points
+
+
+def get_palm_mask_points_alg(sampled_points, segmented_hand):
+    result = []
+    offsets = [(x, y) for x in range(-1, 2) for y in range(-1, 2) if not (x == 0 and y == 0)]
+    for point in sampled_points:
+        angle = 0
+        rad = 1
+        boundary_point = None
+        while boundary_point is None:
+            x = int(cos(radians(angle)) * rad + point[0])
+            y = int(point[1] - sin(radians(angle)) * rad)
+            if segmented_hand[x, y] == 0:
+                has_black_pixels = False
+                has_white_pixels = False
+                for offset_x, offset_y in offsets:
+                    if 0 <= offset_x + x < segmented_hand.shape[0] and 0 <= offset_y + y < segmented_hand.shape[1]:
+                        offset = (x + offset_x, y + offset_y)
+                        if segmented_hand[offset] == 0:
+                            has_black_pixels = True
+                        else:
+                            has_white_pixels = True
+                if has_black_pixels and (not has_white_pixels):
+                    boundary_point = (x, y)
+            if boundary_point is None:
+                angle += 1
+                rad += 1
+        result.append(boundary_point)
+    return result
 
 
 def get_rotation_angle(palm_point, middle_wrist_point):
@@ -163,7 +389,6 @@ def get_thumb_index(fingers, palm_point, first_wrist_point, second_wrist_point):
         finger_vector = np.array(finger_vector, dtype=np.float32)
         cos_angle = wrist_vector.dot(finger_vector) / (np.linalg.norm(wrist_vector) * np.linalg.norm(finger_vector))
         angle = degrees(acos(cos_angle))
-        print(angle)
         if angle < 50:
             return index
     return None
@@ -241,12 +466,11 @@ def get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_p
     if thumb_index is not None:
         quarter_length = ((second_finger_point[0] - first_finger_point[0]) - fifth_length) // 4
     else:
-        quarter_length = ((second_finger_point[0] - first_finger_point[0])) // 4
+        quarter_length = (second_finger_point[0] - first_finger_point[0]) // 4
     fingers_status = [False, False, False, False, False]
     fingers_status[0] = thumb_index is not None
     finger_lines = get_fingers_lines(fingers, thumb_index, first_finger_point, second_finger_point)
     for center, bottom_center in finger_lines:
-        palm_intersection = get_horizontal_line_intersection(center, bottom_center, first_finger_point[1])
         if thumb_index is not None:
             length = int(bottom_center[0]) - first_finger_point[0] - fifth_length
         else:
@@ -265,7 +489,7 @@ def draw_fingers_line(first_finger_point, second_finger_point, thumb_index, colo
     if thumb_index is not None:
         quarter_length = ((second_finger_point[0] - first_finger_point[0]) - fifth_length) // 4
     else:
-        quarter_length = ((second_finger_point[0] - first_finger_point[0])) // 4
+        quarter_length = (second_finger_point[0] - first_finger_point[0]) // 4
     if thumb_index is not None:
         first_point = (first_finger_point[0] + fifth_length, first_finger_point[1])
     else:
@@ -298,7 +522,6 @@ def get_fingers_lines(fingers, thumb_index, first_palm_point, second_palm_point)
                 temp = width
                 width = height
                 height = temp
-            print(round(float(width) / float(palm_length)))
             if round(float(width) / float(palm_length)) > 1:
                 rect = original_rect
                 num_of_rectangles = round(float(width) / float(palm_length))
@@ -335,23 +558,12 @@ def get_finger_tips(segmented_hand, fingers, thumb_index, palm_center):
     peaks, _ = find_peaks(histogram)
 
 
-def get_hand_attributes(segmented_hand):
+def get_hand_attributes_with_visualisations(segmented_hand):
     contours, _ = cv.findContours(segmented_hand, cv.RETR_LIST, cv.CHAIN_APPROX_NONE)
-    poly_image = np.zeros((segmented_hand.shape[0], segmented_hand.shape[1], 3), dtype=np.uint8)
-    cv.drawContours(poly_image, contours, -1, (255, 0, 0), 1)
-    cv.imshow('Image for finger line', poly_image)
-    while True:
-        if cv.waitKey(0) & 0xFF == ord('q') or cv.waitKey(0) & 0xFF == ord('Q'):
-            break
     contour = max(contours, key=lambda cnt: cv.arcLength(cnt, True))
-    '''contour = contours[0]'''
     contour = [point[0] for point in contour]
     poly_image = np.zeros((segmented_hand.shape[0], segmented_hand.shape[1], 3), dtype=np.uint8)
     cv.drawContours(poly_image, np.array([contour]), -1, (255, 0, 0), 1)
-    cv.imshow('Image for finger line', poly_image)
-    while True:
-        if cv.waitKey(0) & 0xFF == ord('q') or cv.waitKey(0) & 0xFF == ord('Q'):
-            break
     hand_contour_image = np.zeros(segmented_hand.shape, dtype=np.uint8)
     cv.fillPoly(hand_contour_image, np.array([contour]), 255)
     palm_point = get_palm_point(hand_contour_image)
@@ -359,16 +571,100 @@ def get_hand_attributes(segmented_hand):
     radius = 1.2 * maximum_radius
     sampled_points = get_sampled_points(palm_point, radius)
     palm_mask_points = get_palm_mask_points(sampled_points, contour)
+    palm_mask_points_visualisation = PalmMaskPointsVisualisation(hand_contour_image, palm_point, radius, sampled_points,
+                                                                 palm_mask_points)
+    first_wrist_point, second_wrist_point = get_wrist_points(palm_mask_points)
+    palm_wrist_points_visualisation = PalmWristPointsVisualisation(hand_contour_image, palm_point, radius,
+                                                                   sampled_points, palm_mask_points, first_wrist_point,
+                                                                   second_wrist_point)
+    middle_wrist_point = ((first_wrist_point[0] + second_wrist_point[0]) / 2.0,
+                          (first_wrist_point[1] + second_wrist_point[1]) / 2.0)
+    rotation_angle = get_rotation_angle(palm_point, middle_wrist_point)
+    rotation_matrix = get_rotation_matrix(palm_point, middle_wrist_point)
+    segmented_hand = cv.warpAffine(segmented_hand, rotation_matrix, (segmented_hand.shape[0], segmented_hand.shape[1]))
+    rotated_segmented_hand = np.copy(segmented_hand)
+    first_wrist_point = np.array(first_wrist_point)
+    second_wrist_point = np.array(second_wrist_point)
+    palm_mask_points = [np.array(palm_mask_point) for palm_mask_point in palm_mask_points]
+    first_wrist_point = transform_point(first_wrist_point, rotation_angle, palm_point)
+    second_wrist_point = transform_point(second_wrist_point, rotation_angle, palm_point)
+    palm_mask_points = [transform_point(palm_mask_point, rotation_angle, palm_point)
+                        for palm_mask_point in palm_mask_points]
+    palm_mask_points = np.array(palm_mask_points, dtype=np.int32)
+    minimum_row = segmented_hand.shape[0]
+    if first_wrist_point[1] < minimum_row:
+        minimum_row = first_wrist_point[1]
+    if second_wrist_point[1] < minimum_row:
+        minimum_row = second_wrist_point[1]
+    for row in range(int(minimum_row), segmented_hand.shape[0]):
+        for col in range(0, segmented_hand.shape[1]):
+            segmented_hand[row, col] = 0
+    segmented_hand_no_arm = np.copy(segmented_hand)
+    cv.fillPoly(segmented_hand, [palm_mask_points], 0)
+    mask_image = np.zeros(segmented_hand.shape, dtype=np.uint8)
+    cv.fillPoly(mask_image, [palm_mask_points], 255)
+    kernel = np.ones((5, 5), dtype=np.uint8)
+    segmented_hand = cv.morphologyEx(segmented_hand, cv.MORPH_OPEN, kernel)
+    fingers = get_fingers(segmented_hand)
+    thumb_index = get_thumb_index(fingers, palm_point, first_wrist_point, second_wrist_point)
+    first_finger_point, second_finger_point = get_finger_line(segmented_hand_no_arm, fingers, thumb_index)
+    finger_lines = get_fingers_lines(fingers, thumb_index, first_finger_point, second_finger_point)
+    fingers_status = get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_point)
+    visualization = FinalVisualization(palm_point, (first_finger_point, second_finger_point),
+                                       (first_wrist_point, second_wrist_point), finger_lines, fingers, fingers_status,
+                                       thumb_index)
+    visualization_image = visualization.get_image(segmented_hand.shape)
+    distance_transform_visualization = DistanceTransformVisualization(hand_contour_image)
+    distance_transform_image = distance_transform_visualization.get_image()
+    palm_point_visualisation = PalmPointVisualization(hand_contour_image, palm_point)
+    palm_point_image = palm_point_visualisation.get_image()
+    palm_radius_visualisation = PalmRadiusVisualisation(hand_contour_image, palm_point, radius)
+    palm_radius_image = palm_radius_visualisation.get_image()
+    palm_mask_points_image = palm_mask_points_visualisation.get_image()
+    wrist_points_image = palm_wrist_points_visualisation.get_image()
+    fingers_bounding_boxes_visualisation = FingersBoundingBoxesVisualisation(segmented_hand)
+    fingers_bounding_boxes_image = fingers_bounding_boxes_visualisation.get_image()
+    finger_lines_visualisation = FingerLinesVisualisation(segmented_hand, finger_lines)
+    finger_lines_image = finger_lines_visualisation.get_image()
+    cv.imshow('Final', visualization_image)
+    cv.imshow('Distance Transform', distance_transform_image)
+    cv.imshow('Palm Point', palm_point_image)
+    cv.imshow('Palm Radius', palm_radius_image)
+    cv.imshow('Palm Mask Points', palm_mask_points_image)
+    cv.imshow('Wrist Points', wrist_points_image)
+    cv.imshow('Rotated segmented hand', rotated_segmented_hand)
+    cv.imshow('Palm Mask Image', mask_image)
+    cv.imshow('Fingers', segmented_hand)
+    cv.imshow('Fingers Bounding Boxes', fingers_bounding_boxes_image)
+    cv.imshow('Finger Lines', finger_lines_image)
+
+    cv.imwrite('Final.jpg', visualization_image)
+    cv.imwrite('Distance Transform.jpg', distance_transform_image)
+    cv.imwrite('Palm Point.jpg', palm_point_image)
+    cv.imwrite('Palm Radius.jpg', palm_radius_image)
+    cv.imwrite('Palm Mask Points.jpg', palm_mask_points_image)
+    cv.imwrite('Wrist Points.jpg', wrist_points_image)
+    cv.imwrite('Rotated segmented hand.jpg', rotated_segmented_hand)
+    cv.imwrite('Palm Mask Image.jpg', mask_image)
+    cv.imwrite('Fingers.jpg', segmented_hand)
+    cv.imwrite('Fingers Bounding Boxes.jpg', fingers_bounding_boxes_image)
+    cv.imwrite('Finger Lines.jpg', finger_lines_image)
+    return fingers_status
+
+
+def get_hand_attributes(segmented_hand):
+    contours, _ = cv.findContours(segmented_hand, cv.RETR_LIST, cv.CHAIN_APPROX_NONE)
+    contour = max(contours, key=lambda cnt: cv.arcLength(cnt, True))
+    contour = [point[0] for point in contour]
     poly_image = np.zeros((segmented_hand.shape[0], segmented_hand.shape[1], 3), dtype=np.uint8)
-    for point in palm_mask_points:
-        cv.circle(poly_image, (point[0], point[1]), 3, (0, 0, 255), 1)
-    for point in sampled_points:
-        cv.circle(poly_image, (point[0], point[1]), 3, (255, 0, 0), 1)
-    cv.drawContours(poly_image, np.array([contour]), -1, (0, 255, 0), 1)
-    cv.imshow('Image for finger line', poly_image)
-    while True:
-        if cv.waitKey(0) & 0xFF == ord('q') or cv.waitKey(0) & 0xFF == ord('Q'):
-            break
+    cv.drawContours(poly_image, np.array([contour]), -1, (255, 0, 0), 1)
+    hand_contour_image = np.zeros(segmented_hand.shape, dtype=np.uint8)
+    cv.fillPoly(hand_contour_image, np.array([contour]), 255)
+    palm_point = get_palm_point(hand_contour_image)
+    maximum_radius = get_maximum_radius(palm_point, contour)
+    radius = 1.2 * maximum_radius
+    sampled_points = get_sampled_points(palm_point, radius)
+    palm_mask_points = get_palm_mask_points(sampled_points, contour)
     first_wrist_point, second_wrist_point = get_wrist_points(palm_mask_points)
     middle_wrist_point = ((first_wrist_point[0] + second_wrist_point[0]) / 2.0,
                           (first_wrist_point[1] + second_wrist_point[1]) / 2.0)
@@ -393,31 +689,15 @@ def get_hand_attributes(segmented_hand):
             segmented_hand[row, col] = 0
     segmented_hand_no_arm = np.copy(segmented_hand)
     cv.fillPoly(segmented_hand, [palm_mask_points], 0)
+    mask_image = np.zeros(segmented_hand.shape, dtype=np.uint8)
+    cv.fillPoly(mask_image, [palm_mask_points], 255)
     kernel = np.ones((5, 5), dtype=np.uint8)
     segmented_hand = cv.morphologyEx(segmented_hand, cv.MORPH_OPEN, kernel)
     fingers = get_fingers(segmented_hand)
     thumb_index = get_thumb_index(fingers, palm_point, first_wrist_point, second_wrist_point)
-    get_finger_tips(segmented_hand, fingers, thumb_index, palm_point)
     first_finger_point, second_finger_point = get_finger_line(segmented_hand_no_arm, fingers, thumb_index)
     fingers_status = get_fingers_status(fingers, thumb_index, first_finger_point, second_finger_point)
-    print(fingers_status)
-    color_image = cv.cvtColor(segmented_hand, cv.COLOR_GRAY2BGR)
-    cv.circle(color_image, palm_point, 5, (0, 0, 255), 2)
-    cv.circle(color_image, palm_point, int(maximum_radius), (0, 255, 0))
-    cv.circle(color_image, palm_point, int(radius), (255, 0, 0), 1)
-    cv.circle(color_image, (first_wrist_point[0], first_wrist_point[1]), 3, (0, 0, 255), 3)
-    cv.circle(color_image, (second_wrist_point[0], second_wrist_point[1]), 3, (0, 0, 255), 3)
-    cv.circle(color_image, first_finger_point, 3, (0, 255, 0), 2)
-    cv.circle(color_image, second_finger_point, 3, (0, 255, 0), 2)
-    cv.line(color_image, (first_wrist_point[0], first_wrist_point[1]), (second_wrist_point[0], second_wrist_point[1]),
-            (0, 255, 255), 3)
-    draw_fingers_line(first_finger_point, second_finger_point, thumb_index, color_image)
-    fingers_lines = get_fingers_lines(fingers, thumb_index, first_finger_point, second_finger_point)
-    for center, bottom in fingers_lines:
-        cv.circle(color_image, (int(center[0]), int(center[1])), 3, (0, 0, 255), -1)
-        cv.circle(color_image, (int(bottom[0]), int(bottom[1])), 3, (255, 0, 0), -1)
-        cv.line(color_image, (int(center[0]), int(center[1])), (int(bottom[0]), int(bottom[1])), (0, 255, 0), 2)
-    cv.imshow(FINAL_SEGMENTED_HAND_WINDOW, color_image)
+    return fingers_status
 
 
 class Mouse:
@@ -462,8 +742,6 @@ class Mouse:
 
 def third_main():
     camera = cv.VideoCapture(0)
-    #camera.set(cv.CAP_PROP_FRAME_WIDTH, 1280)
-    #camera.set(cv.CAP_PROP_FRAME_HEIGHT, 720)
     mouse = Mouse()
     cv.namedWindow('Camera')
     cv.setMouseCallback('Camera', mouse.callback)
@@ -471,6 +749,10 @@ def third_main():
     first_point = None
     second_point = None
     hsv_values = None
+    finger_status = [False] * 5
+    hand_clear = False
+    key_code = None
+    tick_mark = cv.getTickCount()
     while camera.isOpened():
         ret, frame = camera.read()
         if ret:
@@ -484,7 +766,6 @@ def third_main():
                 cv.namedWindow('Panel')
                 cv.rectangle(frame, first_point, second_point, (255, 0, 0))
                 roi = frame[first_point[1]: second_point[1], first_point[0]: second_point[0]]
-                #cv.imshow('ROI', roi)
                 if hsv_values is None:
                     hsv_values = HSVValues()
                     lower_hue_bar = TrackBar(hsv_values, 'lower_hue', 0, 180, 'Lower Hue', 'Panel')
@@ -494,12 +775,36 @@ def third_main():
                     lower_value_bar = TrackBar(hsv_values, 'lower_value', 0, 255, 'Lower Value', 'Panel')
                     upper_value_bar = TrackBar(hsv_values, 'upper_value', 0, 255, 'Upper Value', 'Panel')
                 else:
-                    segmented_hand = segment_hand(roi, hsv_values)
-                    cv.imshow('Segmented', segmented_hand)
+                    if not hand_clear:
+                        segmented_hand = segment_hand(roi, hsv_values)
+                        cv.imshow('Segmented', segmented_hand)
+                        if key_code == ord('S') or key_code == ord('s'):
+                            hand_clear = True
+                    else:
+                        segmented_hand = segment_hand(roi, hsv_values)
+                        cv.imshow('Segmented', segmented_hand)
+                        try:
+                            finger_status = get_hand_attributes(segmented_hand)
+                        except Exception:
+                            pass
+            fps = cv.getTickFrequency() / (cv.getTickCount() - tick_mark)
+            tick_mark = cv.getTickCount()
+            print('FPS: {}'.format(fps))
+            print(finger_status)
             cv.imshow('Camera', frame)
-            if cv.waitKey(25) & 0xFF == ord('q') or cv.waitKey(25) & 0xFF == ord('Q'):
+            key_code = cv.waitKey(5) & 0xFF
+            if key_code == ord('q') or key_code == ord('Q'):
                 break
     camera.release()
+
+
+def get_masked_image(img, mask):
+    result = np.zeros(img.shape, dtype=img.dtype)
+    for row in range(0, img.shape[0]):
+        for col in range(0, img.shape[1]):
+            if mask[row, col] == 255:
+                result[row, col] = img[row, col]
+    return result
 
 
 def main():
@@ -525,7 +830,13 @@ def main():
         if cv.waitKey(1) & 0xFF == ord('s'):
             break
     cv.destroyAllWindows()
-    segmented_hand = segment_hand(img, hsv_values)
+    equalized_histogram = equalize_histogram(img)
+    cv.imwrite('Original.jpg', img)
+    cv.imwrite('Equalized histogram.jpg', equalized_histogram)
+    segmented_hand = segment_hand(equalized_histogram, hsv_values)
+    masked_hand = get_masked_image(img, segmented_hand)
+    cv.imwrite('Masked hand.jpg', masked_hand)
+    cv.imwrite('Mask.jpg', segmented_hand)
     get_hand_attributes(segmented_hand)
     while True:
         if cv.waitKey(1) & 0xFF == ord('q'):
@@ -629,6 +940,46 @@ def second_main():
     cv.destroyAllWindows()
 
 
+def read_file(path):
+    file_str = ''
+    with open(path) as file:
+        file_str = ''.join(file.readlines())
+    return file_str
+
+
+class Window(mglw.WindowConfig):
+    gl_version = (3, 3)
+    title = "ModernGL Example"
+    window_size = (1280, 720)
+    aspect_ratio = 16 / 9
+    resizable = True
+    samples = 4
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        vertex_shader_str = read_file('vertex_shader.glsl')
+        geometry_shader_str = read_file('geometry_shader.glsl')
+        fragment_shader_str = read_file('fragment_shader.glsl')
+        self.program = self.ctx.program(vertex_shader=vertex_shader_str, geometry_shader=geometry_shader_str,
+                                        fragment_shader=fragment_shader_str)
+        vertices = np.array([0.0, 0.0, 0.5, 0.5, 0.0, 0.0, -0.5, 0.5], dtype='f4')
+        self.vbo = self.ctx.buffer(vertices)
+        self.vao = self.ctx.vertex_array(self.program, [(self.vbo, '2f', 'pos')])
+
+    def render(self, time: float, frame_time: float):
+        self.ctx.clear(1.0, 1.0, 1.0)
+        self.vao.render(mode=moderngl.LINES)
+
+    @classmethod
+    def run(cls):
+        mglw.run_window_config(cls)
+
+
+def fourth_main():
+    Window.run()
+
+
 if __name__ == '__main__':
     main()
     #third_main()
+    #fourth_main()
